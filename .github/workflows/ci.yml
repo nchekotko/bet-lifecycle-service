@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bls
+          POSTGRES_PASSWORD: bls
+          POSTGRES_DB: bls
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U bls" --health-interval 2s --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Start Redpanda
+        run: |
+          docker run -d --name redpanda -p 19092:19092 \
+            docker.redpanda.com/redpandadata/redpanda:v24.2.7 redpanda start \
+            --mode=dev-container --smp=1 \
+            --kafka-addr=external://0.0.0.0:19092 \
+            --advertise-kafka-addr=external://localhost:19092
+          for i in $(seq 1 30); do
+            docker exec redpanda rpk cluster health | grep -q 'Healthy:.*true' && break
+            sleep 2
+          done
+      - run: uv sync --frozen
+      - run: uv run pytest -m integration -rs

@@ -1,0 +1,116 @@
+x-app: &app
+  build: .
+  image: bet-lifecycle-service:local
+  restart: unless-stopped
+  environment: &app-env
+    BLS_DATABASE_URL: postgresql+asyncpg://bls:bls@postgres:5432/bls
+    BLS_BROKER: kafka
+    BLS_KAFKA_BOOTSTRAP: redpanda:9092
+    BLS_REDIS_URL: redis://redis:6379/0
+    BLS_EMBEDDED_WORKERS: "false"
+    BLS_CREATE_SCHEMA: "false"
+    BLS_LOG_LEVEL: INFO
+  depends_on:
+    init-db:
+      condition: service_completed_successfully
+    init-topics:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bls
+      POSTGRES_PASSWORD: bls
+      POSTGRES_DB: bls
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bls"]
+      interval: 2s
+      retries: 30
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+    ports: ["19092:19092"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 3s
+      retries: 30
+
+  init-topics:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        R="rpk -X brokers=redpanda:9092 topic create --if-not-exists"
+        $$R -p 6 feed.raw.alpha feed.raw.beta sportsbook.results sportsbook.bets sportsbook.markets
+        $$R -p 1 feed.raw.alpha.dlq feed.raw.beta.dlq sportsbook.results.dlq
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
+  init-db:
+    <<: *app
+    restart: "no"
+    command: ["bet-lifecycle", "init-db"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports: ["8000:8000"]
+
+  worker-outbox:
+    <<: *app
+    command: ["bet-lifecycle", "worker", "outbox"]
+    environment:
+      <<: *app-env
+      BLS_METRICS_PORT: "9100"
+
+  worker-settlement:
+    <<: *app
+    command: ["bet-lifecycle", "worker", "settlement"]
+    environment:
+      <<: *app-env
+      BLS_METRICS_PORT: "9100"
+
+  worker-feed:
+    <<: *app
+    command: ["bet-lifecycle", "worker", "feed"]
+    environment:
+      <<: *app-env
+      BLS_METRICS_PORT: "9100"
+
+  worker-staleness:
+    <<: *app
+    command: ["bet-lifecycle", "worker", "staleness"]
+    environment:
+      <<: *app-env
+      BLS_METRICS_PORT: "9100"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["observability"]
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/rules.yml:/etc/prometheus/rules.yml:ro
+    ports: ["9090:9090"]

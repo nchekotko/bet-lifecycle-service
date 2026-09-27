@@ -1,0 +1,40 @@
+groups:
+  - name: bet-lifecycle
+    rules:
+      - record: bet_placement:latency_seconds:p95
+        expr: histogram_quantile(0.95, sum by (le) (rate(bet_placement_seconds_bucket[5m])))
+      - record: bet_placement:latency_seconds:p99
+        expr: histogram_quantile(0.99, sum by (le) (rate(bet_placement_seconds_bucket[5m])))
+
+      - alert: BetPlacementSlow
+        expr: bet_placement:latency_seconds:p99 > 0.25
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "p99 bet placement above 250ms"
+
+      - alert: SettlementConsumerLag
+        expr: sum by (consumer) (consumer_lag_messages) > 1000
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.consumer }} lags by {{ $value }} messages"
+
+      - alert: MessagesDeadLettered
+        expr: increase(consumer_messages_total{result="dlq"}[10m]) > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: "{{ $labels.consumer }} sent messages to the DLQ"
+
+      - alert: ReconciliationMismatch
+        expr: sum(reconciliation_mismatches) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "bets / ledger / settlements disagree"
+
+      - alert: OutboxBacklog
+        expr: outbox_pending_messages > 5000
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: "outbox relay is not keeping up (broker down?)"

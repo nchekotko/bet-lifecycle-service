@@ -16,6 +16,10 @@ from bet_lifecycle.observability.logging import configure_logging
 async def _worker(name: str, settings: Settings) -> None:
     from bet_lifecycle.bootstrap import Container
 
+    if settings.metrics_port:
+        from prometheus_client import start_http_server
+
+        start_http_server(settings.metrics_port)
     c = Container(settings)
     await c.start()
     stop = asyncio.Event()

@@ -89,7 +89,8 @@ class Container:
         self._sources: list[Any] = []
 
     async def start(self) -> None:
-        await self.db.create_schema()
+        if self.settings.create_schema:
+            await self.db.create_schema()
         if self._kafka_publisher is not None:
             await self._kafka_publisher.start()
 

@@ -15,7 +15,11 @@ from typing import Any
 
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
-_STANDARD = set(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {"message", "asctime"}
+_STANDARD = set(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {
+    "message",
+    "asctime",
+    "color_message",  # uvicorn duplicate with ANSI codes
+}
 
 
 class JsonFormatter(logging.Formatter):

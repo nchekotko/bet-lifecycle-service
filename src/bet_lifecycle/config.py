@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     kafka_bootstrap: str = "localhost:19092"
     redis_url: str | None = None
     log_level: str = "INFO"
+    # Create tables on startup (local/SQLite). In compose a one-shot `init-db` does it.
+    create_schema: bool = True
+    # Workers have no HTTP server; expose /metrics on this port if set.
+    metrics_port: int | None = None
 
     # Run outbox relay + settlement consumer + staleness sweep inside the API process.
     # Default for local/memory mode; in docker-compose these run as separate workers.

@@ -668,10 +668,11 @@ class OutboxRepository(_Repo):
             for r in await self.conn.execute(q)
         ]
 
-    async def mark_published(self, row_id: int, at: datetime) -> None:
-        await self.conn.execute(
-            update(t.outbox).where(t.outbox.c.id == row_id).values(published_at=at)
-        )
+    async def mark_published(self, row_ids: Sequence[int], at: datetime) -> None:
+        if row_ids:
+            await self.conn.execute(
+                update(t.outbox).where(t.outbox.c.id.in_(row_ids)).values(published_at=at)
+            )
 
     async def mark_failed(self, row_id: int, attempts: int, retry_at: datetime, error: str) -> None:
         await self.conn.execute(

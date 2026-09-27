@@ -51,7 +51,7 @@ class OutboxRelay:
         return float(min(self.base_backoff * 2 ** (attempts - 1), self.max_backoff))
 
     async def run_once(self) -> int:
-        published = 0
+        published: list[int] = []
         async with self.db.transaction() as tx:
             rows = await tx.outbox.fetch_pending(self.batch_size)
             for row in rows:
@@ -79,11 +79,11 @@ class OutboxRelay:
                         },
                     )
                     break
-                await tx.outbox.mark_published(row.id, self.clock.now())
+                published.append(row.id)
                 OUTBOX_PUBLISHED_TOTAL.labels(row.topic).inc()
-                published += 1
+            await tx.outbox.mark_published(published, self.clock.now())
             OUTBOX_PENDING.set(await tx.outbox.pending_count())
-        return published
+        return len(published)
 
     async def run_forever(self, stop: asyncio.Event, interval: float = 0.2) -> None:
         while not stop.is_set():
@@ -92,6 +92,8 @@ class OutboxRelay:
             except Exception:
                 log.exception("outbox relay iteration failed")
                 n = 0
-            if n == 0:
+            if n < self.batch_size:
+                # Loop immediately only while draining a backlog; otherwise do not
+                # compete with request handlers for the database after every commit.
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop.wait(), interval)

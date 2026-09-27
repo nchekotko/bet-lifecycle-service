@@ -190,6 +190,9 @@ class FeedIngestionService:
         elif m.kind is FeedKind.ODDS:
             if event.status in (EventStatus.ENDED, EventStatus.ABANDONED):
                 return event_id
+            # Lock the event's markets in id order first - the same order settlement
+            # uses - so a reprice and a settlement cannot deadlock on PostgreSQL.
+            await tx.markets.by_event(event_id, for_update=True)
             for quote in m.quotes:
                 await self._apply_quote(tx, event_id, m.provider, quote, now, touched)
         elif m.kind is FeedKind.STATUS and m.status is not None:

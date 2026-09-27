@@ -9,6 +9,8 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import and_, func, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Row
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -419,6 +421,7 @@ def account_kind(account_id: str) -> str:
 
 class LedgerRepository(_Repo):
     async def ensure_accounts(self, account_ids: Iterable[str], at: datetime) -> None:
+        """Create missing accounts; concurrent creators do not conflict."""
         ids = sorted(set(account_ids))
         existing = {
             r[0]
@@ -427,11 +430,13 @@ class LedgerRepository(_Repo):
             )
         }
         missing = [a for a in ids if a not in existing]
-        if missing:
-            await self.conn.execute(
-                insert(t.ledger_accounts),
-                [{"id": a, "kind": account_kind(a), "created_at": at} for a in missing],
-            )
+        if not missing:
+            return
+        dialect_insert = pg_insert if self.conn.dialect.name == "postgresql" else sqlite_insert
+        await self.conn.execute(
+            dialect_insert(t.ledger_accounts).on_conflict_do_nothing(index_elements=["id"]),
+            [{"id": a, "kind": account_kind(a), "created_at": at} for a in missing],
+        )
 
     async def lock_accounts(self, account_ids: Sequence[str], at: datetime) -> None:
         """Serialise balance checks per account. Sorted order prevents deadlocks."""
@@ -621,6 +626,7 @@ class OutboxRow:
     payload: str
     headers: dict[str, str]
     attempts: int
+    next_attempt_at: datetime
 
 
 class OutboxRepository(_Repo):
@@ -638,18 +644,26 @@ class OutboxRepository(_Repo):
             )
         )
 
-    async def fetch_due(self, now: datetime, limit: int) -> list[OutboxRow]:
+    async def fetch_pending(self, limit: int) -> list[OutboxRow]:
+        """Oldest unpublished rows first, including those still in backoff: the relay
+        must not publish row N+1 while row N is waiting for a retry."""
         q = (
             select(t.outbox)
             .where(t.outbox.c.published_at.is_(None))
-            .where(t.outbox.c.next_attempt_at <= now)
             .order_by(t.outbox.c.id)
             .limit(limit)
             .with_for_update(skip_locked=True)
         )
         return [
             OutboxRow(
-                r.id, r.message_id, r.topic, r.key, r.payload, dict(r.headers or {}), r.attempts
+                r.id,
+                r.message_id,
+                r.topic,
+                r.key,
+                r.payload,
+                dict(r.headers or {}),
+                r.attempts,
+                r.next_attempt_at,
             )
             for r in await self.conn.execute(q)
         ]

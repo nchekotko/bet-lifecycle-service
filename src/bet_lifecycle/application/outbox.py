@@ -53,8 +53,10 @@ class OutboxRelay:
     async def run_once(self) -> int:
         published = 0
         async with self.db.transaction() as tx:
-            rows = await tx.outbox.fetch_due(self.clock.now(), self.batch_size)
+            rows = await tx.outbox.fetch_pending(self.batch_size)
             for row in rows:
+                if row.next_attempt_at > self.clock.now():
+                    break  # head of the queue is backing off; keep order
                 try:
                     await self.publisher.publish(
                         row.topic,
